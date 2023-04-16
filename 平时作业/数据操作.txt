@@ -1,0 +1,111 @@
+ogrinfo -ro -al -so /vsicurl/https://github.com/GeospatialPython/pyshp/blob/master/shapefiles/blockgroups.shp
+
+###postgis操作**************************************************************
+建库
+initdb /Users/stzhou/dbf/pg -E utf8
+
+createdb test -O stzhou -E UTF8 –e
+连接到数据库，进入数据库操作状态：psql -U stzhou -d stzhou -h 127.0.0.1
+CREATE EXTENSION postgis; 
+CREATE EXTENSION postgis_raster;
+列出当前数据库：\l
+退出当前连接：\q
+关闭：pg_ctl -D pgdir stop -s -m fast（常用，可存为脚本）
+
+数据操作：
+CREATE TABLE xiaoqu ( ID int NOT NULL, name varchar(255) DEFAULT NULL, code varchar(255) DEFAULT NULL, type int DEFAULT NULL, the_geom geometry DEFAULT NULL, PRIMARY KEY (ID) );
+
+INSERT INTO xiaoqu VALUES ('1', '武汉大学', '650106015003001', '0', st_geomfromtext('MULTIPOLYGON(((9742726.24133861 5439705.01541711, 9742721.16132846 5439476.41495991, 9742533.20095253 5439352.80137935, 9742526.42760566 5439430.69486847, 9742463.77414701 5439437.46821535, 9742427.74526178 5439437.17087792, 9742423.13406573 5439342.64135902, 9742407.89403525 5439335.86801215, 9742109.86677253 5439334.17467543, 9742118.963493 5439592.06366672, 9742423.13406573 5439586.48184671, 9742477.49416709 5439585.64443215, 9742489.17419782 5439711.78876399, 9742726.24133861 5439705.01541711)))'));
+
+SELECT NAME FROM xiaoqu where geometry_within(st_geomfromtext('Point(9742477.49416709 5439585.64443215)') ,the_geom);
+
+//###仅支持pg2pg模式
+gdal_translate -of GTiff  "PG:dbname=test schema=public table=dem user=stzhou" -sds ~/geodata/pg_out/dem.tif
+
+
+ogr2ogr导入数据：
+ogr2ogr -f PostgreSQL "PG:dbname=test user=stzhou" -lco PG_USE_COPY=YES -lco SHAPE_ENCODING=GBK -progress -update -append  -gt -1 -nln ogr_china  ~/geodata/china_shp/china.shp
+
+ogr2ogr -f PostgreSQL "PG:dbname=test user=stzhou host=10.211.55.5 port=5432 password=stzhou" -lco PG_USE_COPY=YES -lco SHAPE_ENCODING=GBK -progress -update -append  -gt -1 -nln ogr_china  ~/geodata/china_shp/china.shp
+
+
+命令行导入栅格数据：
+raster2pgsql  -s 4326 -I -C -M ~/geodata/s51.tif -F -t 256x256 public.dem | psql -d test -U stzhou
+
+raster2pgsql  -s 4326 -I -C -M ~/geodata/s51.tif -F -t 256x256 public.dem | psql -d test -U stzhou -h 10.211.55.5  -W stzhou 
+
+命令行导入矢量数据
+shp2pgsql -s 4326 -W GBK ~/geodata/china_shp/china.shp public.china | psql -d test -U stzhou
+
+执行MapReduce wordcount测试
+hadoop jar /usr/local/Cellar/hadoop/3.3.2/libexec/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.3.2.jar wordcount /word.txt /out
+
+###ES数据插入和查询**************************************************************
+curl -XPOST 'http://localhost:9200/rsgis/courses/' -H 'Content-Type: application/json' -d'{"title":"时空数据处理与组织aa","description":"必修课","school":"RSGIS"}'
+
+GET /rsgis/courses/_search?q=school:RSGIS
+
+POST /rsgis/courses/
+{"title":"时空数据处理与组织aa","description":"必修课","school":"RSGIS"}
+POST /rsgis/courses/
+{"title":"时空数据处理与组织aa","description":"必修课","school":"RSGIS"}
+
+DELETE /rsgis
+
+
+###Spark wordcount**************************************************************
+sc.textFile("/Users/stzhou/geodata/word.txt").flatMap(_.split(" ")).map((_,1)).reduceByKey(_ + _).collect().foreach(println)
+//保存到文件
+sc.textFile("/Users/stzhou/geodata/word.txt").flatMap(_.split(" ")).map((_,1)).reduceByKey(_ + _).saveAsTextFile("/Users/stzhou/geodata/out")
+
+###hadoop MR wordcount**************************************************************
+hadoop jar hadoop-mapreduce-examples-3.3.2.jar wordcount /word.txt /output1
+
+
+###mongodb操作**************************************************************
+///MongoDB数据插入
+db.stzhou.insert({title:'时空数据处理与组织', description:'专业选修课', school:'RSGIS'})
+db.stzhou.insert({name:'时空数据处理与组织-aaa', abc:'sadf', description2:'专业选修课', schoolwhu:'RSGIS2'})
+
+Shp -> JSON（转换后需删除头尾部分，变成json数组模式）
+ogr2ogr -f geoJSON china.json china.shp
+导入MongoDB
+mongoimport --db stzhou --collection china --jsonArray --file /Users/stzhou/geodata/china.json
+
+建立索引（需连接mongo, db.china.getIndexes()可查看索引）
+db.china.createIndex( {"geometry": "2dsphere" } )
+
+观察索引创建进度
+db.currentOp({ $or: [
+ { op: "command", "query.createIndexes": { $exists: true } },
+ { op: "insert", ns: /\.system\.indexes\b/ } ] } )
+
+检索：分别在建立索引前后统计检索时间
+在find语句后面加上 .explain(“executionStats”) 可显示检索时间 "executionTimeMillis "
+
+北京市六环路多边形
+db.getCollection('china').find({
+	"geometry": {"$geoIntersects": 
+	{"$geometry": {"type": "Polygon","coordinates": 
+[[[116.24633789062499, 40.168380093142446], [116.17492675781251, 40.15998434802335], [116.1199951171875, 40.057052221322], [116.09527587890624, 40.002371935876475], [116.1474609375, 39.890772566959534], [116.10626220703124, 39.70929962338767], [116.3177490234375, 39.69662085337441], [116.57592773437499, 39.7642140375156], [116.6912841796875, 39.86969567045658], [116.69677734375, 39.99605985169435], [116.62261962890624, 40.094882122321145], [116.6143798828125, 40.13899044275822], [116.43310546875, 40.15788524950653], [116.28753662109375, 40.18097176388719], [116.24633789062499, 40.168380093142446]]]
+	}}
+	}
+	}, {"properties":1})
+
+以某个点为中心，圆形缓冲区查询(半径单位是弧度)
+db.getCollection('china').find({
+    "geometry": {
+        "$geoWithin": { "$centerSphere": [ [112.53,31.28] ,0.12 ]}
+    }
+    }, {"properties":1}).explain("executionStats") 
+
+与直线相交
+db.getCollection('china').find({
+	"geometry": {"$geoIntersects": 
+	{"$geometry": {"type": "LineString","coordinates": [[84.26, 27.34], [108.95,45.22]]}
+	}
+	}
+	}, {"properties":1})
+
+
+在find后面加上 .explain("executionStats") 可显示检索时间 "executionStats" : 	"executionTimeMillis"
